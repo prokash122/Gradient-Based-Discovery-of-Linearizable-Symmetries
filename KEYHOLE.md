@@ -11,8 +11,18 @@ python discover_symmetry.py --data dataset_keyhole.csv     # -> output/run.log
 python rho_and_transform.py --data dataset_keyhole.csv     # -> output/rho_and_transform.log
 ```
 
-Both are deterministic (seed 42). Nothing is trained; every reported quantity is
-an eigenvalue, an eigenvector, or a credible interval derived from one.
+Both are deterministic given a fixed environment (seed 42, fixed BLAS and library
+versions). There is no training loop and no stochastic optimiser — but the GP
+hyper-parameters *are* fitted by marginal-likelihood optimisation with six
+restarts, and the pipeline selects a family, an active dimension and a lift.
+Everything downstream of the gradient field is an eigenvalue, an eigenvector, or
+an interval derived from one. **[revised]**
+
+> **Revision note.** This document was revised after a technical review raised
+> several well-founded objections. Six claims in the first version were wrong or
+> overstated; each correction is marked **[revised]** where it occurs, and
+> [Part V](#part-v--open-theoretical-questions) collects the questions that
+> remain open. Every number in Part III was re-verified and stands.
 
 **Contents**
 
@@ -20,7 +30,8 @@ an eigenvalue, an eigenvector, or a credible interval derived from one.
 2. [The theory](#part-ii--the-theory)
 3. [Results](#part-iii--results)
 4. [Limits](#part-iv--what-is-solid-and-what-is-not)
-5. [Notation and file map](#appendix)
+5. [Open theoretical questions](#part-v--open-theoretical-questions)
+6. [Notation and file map](#appendix)
 
 ---
 
@@ -65,6 +76,15 @@ dimensionless group, the **Keyhole number**:
 ```
 Ke = etaP · Vs^(-1/2) · r0^(-3/2) · alpha^(-1/2) · rho^(-1) · cp^(-1) · (Tl-T0)^(-1)
 ```
+
+**[revised] Note the constant.** The published definition carries a factor of π,
+`Ke = ηP / (π ρ c_p (T_l−T_0) √(α V_s r₀³))`, which the code's comment at
+`discover_symmetry.py:62` omits. I verified that the `Ke` column of the CSV
+*does* include it (`Ke_csv / Ke_no-π = 0.31884 ≈ 1/π`). The omission has **no
+effect on any result in this document**: everything reported is an exponent
+direction, and a multiplicative constant shifts `log Ke` without rotating it. It
+does change the fitted slope and intercept below, which are quoted on the
+π-inclusive CSV values.
 
 Physically it is a ratio: energy delivered per unit thermal-diffusion length,
 against the energy needed to raise that much material to melting. Measured
@@ -137,17 +157,36 @@ and read the spectrum:
 λ = 0 for g  ⟺  E[(grad_f · g)²] = 0  ⟺  grad_f ⊥ g everywhere  ⟺  y(x + εg) = y(x)
 ```
 
-**The null space of `C` is the Lie algebra of symmetries** — not an
-approximation of it, the same object. So:
+So, **subject to regularity conditions stated below**:
 
 | question | answer |
 |---|---|
-| how many dimensionless groups? | `rank(C)` |
+| how many response-relevant combinations? | `rank(C)` |
 | which ones? | the leading eigenvectors |
 | what is invariant? | the trailing eigenvectors |
 
-One eigen-decomposition. Nothing is optimised, so the result is bit-for-bit
-reproducible on any machine.
+**[revised] Two precision points that the first version of this document ran
+together.**
+
+*The null space is an almost-everywhere statement, not automatically a global
+symmetry.* `gᵀCg = 0` gives `∇f·g = 0` only `ρ`-almost everywhere. Concluding
+that `f` is constant along every orbit additionally needs: continuity of the
+directional derivative, a density positive on a connected open region, and orbit
+segments that stay inside the supported domain. On this dataset the support is a
+union of three material sheets, so the connectedness condition is *not* met in
+the raw variables — see §3.9.
+
+*It is the null space **within the chosen catalogue**, not "the complete Lie
+algebra of symmetries".* That stronger phrase would require proving the
+candidate family contains the relevant algebra and is closed under Lie brackets.
+Neither is claimed here.
+
+*And `rank(C)` is not the number of dimensionless groups.* Buckingham-Π supplies
+three independent dimensionless coordinates; `rank(C)` measures how many of them
+the response actually varies through, under the chosen lift and density. The
+accurate statement is "the data are consistent with approximately one
+response-relevant monomial combination of the three", not "there is one
+dimensionless group".
 
 ## 2.3 Why logarithms — scaling becomes translation
 
@@ -221,11 +260,30 @@ This is the RMS cosine of the angle between the gradient and the flow:
 * `0` — the flow runs exactly along a level set: perfect invariance;
 * `1` — the flow points straight up the gradient.
 
-It is dimensionless, unit-free, and comparable across families, datasets and
-problems. It is also a **ratio of two expectations under the same `ρ`**, so a
-density that up-weights a high-gradient region inflates numerator and
-denominator together — which is why the defect is simultaneously the
-cross-family *and* the cross-density criterion.
+It is bounded in `[0,1]` by Cauchy–Schwarz, and it is a **ratio of two
+expectations under the same `ρ`**, so a density that up-weights a high-gradient
+region inflates numerator and denominator together.
+
+**[revised] It is not, however, coordinate-free.** The numerator is the
+invariant pairing between a differential and a vector field, but the Euclidean
+norms in the denominator depend on a choice of metric on the input space. Two
+consequences, both measured on this dataset:
+
+* **A normalisation is required for the quantity to exist at all.**
+  `discover_symmetry.py:127` centres the log-Π coordinates
+  (`log_pi -= log_pi.mean(0)`, i.e. geometric-mean normalisation of each group).
+  Without it the raw Π values span 18 orders of magnitude
+  (`4.2e-01`, `5.9e-08`, `3.6e+06`) and every defect collapses to `0.00000` in
+  floating point. This convention was previously undocumented; it is part of the
+  method, not a formatting detail.
+* **The defect *value* is basis-dependent; the *ranking* is not.** Re-running the
+  screen under four different valid Π bases `Π' = Π^M` (§3.9a) moves the scaling
+  defect over `0.00056–0.00965`, a factor of 9 — so it is **not** comparable
+  across datasets as a bare number. But scaling wins in every basis, by margins
+  of 14.5×–99×, and the recovered exponent direction is stable to four decimals.
+
+So: read the defect as a within-analysis comparator under a stated metric, not as
+a universal constant.
 
 ## 2.6 Two ways a zero eigenvalue can lie
 
@@ -273,28 +331,59 @@ through the eigen-decomposition → credible intervals on every eigenvalue, on t
 subspace, and on each exponent. This answers *would a different plausible
 response surface give a different symmetry?*
 
-**The noise floor.** Along a *true* symmetry the response is exactly zero, so the
-**entire** eigenvalue seen in `C` is estimation error — and the GP posterior
-covariance *is* the expected squared error of the posterior mean. Push it into
-the family's parameter space:
+**A resolution scale — `C_noise`. [revised]** Along a *true* symmetry the
+response is exactly zero, so the entire eigenvalue seen in `C` is estimation
+error. The GP quantifies that error: its posterior covariance is the expected
+squared error of the posterior mean. Pushed into the family's parameter space,
 
 ```
 C_noise[a,b] = E_x[ ξ_a(x)ᵀ Cov[grad_f(x)] ξ_b(x) ]
 ```
 
-Then `C − C_noise` is the spectrum the exact gradient field would have produced,
-to first order. Directions whose whole apparent response was surrogate noise
-collapse to zero.
+gives the scale at which an eigenvalue stops being distinguishable from zero.
 
-*Caveat, stated because it is easy to get wrong:* `C_noise` is not diagonal in
-the eigenbasis of `C`, so subtracting it fixes the eigen**values** but rotates
-the eigen**vectors**. When the floor is larger than the structure it is meant to
-expose, that rotation is noise-driven. Use the corrected eigenvalues with the
-plug-in eigenvectors, and print both.
+**The first version of this document said `C − C_noise` "is the spectrum the
+exact gradient field would have produced, to first order". That is not
+justified, and the claim is withdrawn.** Under the ordinary Bayesian reading the
+posterior second moment of the gradient is `μμᵀ + Σ`, so
 
-**A resolution statement.** A symmetry can be resolved only if its true
-eigenvalue sits below the floor, and the floor is printed beside the spectrum.
-That tells you when to spend more compute — something a training loss does not.
+```
+E[C_true | data] = C_plugin + C_noise        (PLUS, not minus)
+```
+
+The posterior mean of `C` is the plug-in *plus* the floor. A subtraction would
+need a separately derived frequentist de-biasing result — an unbiased gradient
+estimator with sampling covariance `Σ` — and the GP posterior mean and posterior
+covariance do not automatically supply that pair.
+
+**What is true, measured rather than asserted.** The posterior mean is also the
+wrong estimator for this question: it is strictly positive definite, so it can
+never detect a null direction. The relevant question is whether the plug-in's
+positive value *along a direction where the truth is zero* is explained by the
+floor. On a synthetic problem where the true null direction `s` is known exactly
+(`sᵀC_true s = 0` by construction):
+
+| noise | median `sᵀC_plug s / sᵀC_noise s` | range over seeds |
+|---|---|---|
+| 2 % | 1.47 | 0.41 – 3.00 |
+| 10 % | 0.99 | 0.28 – 4.17 |
+
+So the floor is the **right order of magnitude** — the plug-in along a true null
+direction really is inflated by roughly `Σ` — but it is calibrated only to
+within a factor of ~3 either way. A ratio below 1 means a subtraction
+over-corrects and the clip to zero is manufactured.
+
+**Therefore the honest use is a ratio, not a subtraction:** report
+`λ_i / (floor along eigenvector i)` as a signal-to-noise statement. On this
+dataset that gives ≈1.4 for `λ₃` and ≈1.9 for `λ₂` — "both sit at the noise
+floor", which is the same conclusion without needing a de-biasing theorem.
+An eigenvalue reaching zero after subtraction is **not** evidence of an exact
+invariance, and this document no longer claims it is.
+
+*Second caveat, independent of the above:* `C_noise` is not diagonal in the
+eigenbasis of `C`, so subtracting it rotates the eigenvectors. When the floor is
+comparable to the structure it is meant to expose, that rotation is noise-driven.
+Both spectra are printed side by side below for exactly this reason.
 
 A second, independent error bar comes from a non-parametric **bootstrap** over
 samples: *would a different dataset of the same size give a different subspace?*
@@ -420,14 +509,25 @@ the headline:
 | 2 | 2.071e-01 | 5.32e-03 | 9.331e-02 | 2.41e-03 | 0.0015 | 1.000 |
 | 3 | 5.009e-02 | 1.29e-03 | **0.000e+00** | **0** | 0.0011 | 1.000 |
 
-**`k* = 1`.** One dimensionless group governs `e*`; two scaling generators span
-the invariant surface. Read straight off the spectrum — no sweep over `k`, no
-restarts, no threshold tuning.
+**`k* = 1`. [revised]** The data support a one-dimensional approximation: one
+monomial combination of the three Π groups accounts for 99.34 % of the gradient
+energy, and two directions are left over.
 
-The third row deserves emphasis. After subtracting the GP's own gradient-noise
-floor it falls to **exactly zero**: the entire apparent response along that
-direction was surrogate error. The data are consistent with an *exact*
-invariance there.
+This is a **model-selection decision, not an exact rank.** All three plug-in
+eigenvalues are strictly positive, and so is `λ₂` after the noise correction, so
+the literal numerical rank is 3. The rule is `select_active_dimension` with
+`energy_tol = 0.01`: `k` is the smallest dimension whose complement carries at
+most 1 % of `Σλ`. The first version of this document said "no threshold tuning",
+which was wrong — 1 % is a threshold. What supports the choice is that three
+independent criteria agree: the energy rule, the spectral gap (188×), and the
+matched-complexity `R²(1 coord) = 0.979`.
+
+The third row is the direction the review flagged. After subtracting the noise
+floor it reaches zero — but per §2.7 that subtraction is not a calibrated
+de-biasing operation, so **zero here is not evidence of an exact invariance**.
+The defensible reading is the ratio: `λ₃ / floor ≈ 1.4` and `λ₂ / floor ≈ 1.9`,
+i.e. both trailing eigenvalues sit at the level of the surrogate's own gradient
+error, and the data cannot distinguish them from zero.
 
 ### The discovered group
 
@@ -497,10 +597,23 @@ Take real experiments, push them along the **exact finite flow**
 | generator 2 | 0.364 | **13.1 %** |
 | Ke direction (contrast) | 4.269 | **153 %** |
 
-A factor of 12–18 between the invariant directions and the active one. The GP was
-never told about these directions, so nothing forces the result to be flat —
-this is a genuine test, and the honest reading is "invariant to about 10% at
-this sample size and surrogate accuracy," not "invariant to machine precision."
+A factor of 12–18 between the invariant directions and the active one.
+
+**[revised] What this does and does not establish.** The GP was never told about
+these directions, so nothing in the construction forces flatness — it is a real
+test *of the surrogate's internal consistency*. It is **not** independent
+physical validation: the same gradient field both discovers the generator and is
+evaluated along its orbit. Independent validation would require new experiments
+or simulations placed on the predicted orbits, or nested cross-validation in
+which the GP, lift, family, dimension and active vector are all re-estimated per
+fold.
+
+**Support check.** At the `|ε| ≤ 0.5` used here, 80–93 % of flowed points remain
+inside the bounding box of the data, with a worst excursion of 9.3 % of a
+coordinate range; at `|ε| = 1` that falls to 50–76 %. So the current setting is
+defensible, but the bounding box is a generous notion of support — the true
+support is a union of three material sheets, and a flow that moves between
+sheets is interpolating, not measuring.
 
 ## 3.6 Step 5 — the Π theorem, recovered from data
 
@@ -547,12 +660,32 @@ at k = 2:  [ 0.00, 0.00, 43.45, 90.00 ] degrees
 at k = 1:  [ 0.00, 0.00,  0.00, 43.50 ] degrees
 ```
 
-Three of the four unit directions sit **exactly** inside the recovered symmetry
-algebra. The active direction in raw log-space matches the known `Ke` exponents
-on the explored part at **cos = 0.9975**.
+Three of the four unit directions sit inside the recovered symmetry algebra; the
+fourth is at 43.5°. The active direction in raw log-space matches the known `Ke`
+exponents on the explored part at **cos = 0.9975**.
 
-Nothing about units was supplied. **The Buckingham-Π structure comes out as a
-consequence of the spectrum, not as an input to it.**
+**[revised] How much this actually establishes.** The first version called this
+"the Buckingham-Π structure recovered from data." That is too strong, for three
+reasons:
+
+* **A unit change is not an experimental perturbation.** The data were recorded
+  in one unit system; they do not contain repeated unit-rescaling experiments.
+  What is being checked is algebraic covariance, not an observed physical
+  response.
+* **The target is dimensionless by construction.** `e* = e/r₀` is a function of
+  the Π groups, so any log-space direction leaving all Π invariant leaves `e*`
+  invariant *identically*. The GP recovering that is a consistency check on the
+  surrogate, not a discovery about the physics.
+* **Some of the zeros are forced by design rank.** The centred log-design has
+  rank 5 of 7, and gradients are projected onto the explored span. Directions
+  outside that span are guaranteed zero. They should be read as
+  **non-identifiable**, which the excitation column correctly reports as `0.0000`
+  — not as recovered symmetries.
+
+The 43.5° fourth angle is the honest signal here. The defensible claim is:
+*on the directions this design explores, the response behaves consistently with
+depending only on dimensionless combinations* — partial alignment, not complete
+recovery.
 
 ## 3.7 Step 6 — local symmetry (a negative control)
 
@@ -621,6 +754,34 @@ and a continuous variable is continuous. **The discreteness is hidden, not
 removed.** The support is still a union of three sheets, which is what §3.10
 confronts.
 
+## 3.9a [new] Does the answer depend on the choice of Π basis?
+
+`ρ` is not the only arbitrary choice. The Buckingham-Π basis is non-unique: any
+invertible integer matrix `M` gives another valid basis `Π' = Π^M`. Since the
+defect's denominator uses a Euclidean norm (§2.5), the basis is part of the
+metric — so the screen must be re-run in several of them.
+
+| basis | translation | scaling | rotation | winner | 2nd/best | cos(w, Ke) |
+|---|---|---|---|---|---|---|
+| identity | 0.01806 | **0.00106** | 0.01535 | scaling | 14.5× | 0.999569 |
+| shear | 0.15739 | **0.00965** | 0.15484 | scaling | 16.0× | 0.999155 |
+| mix | 0.12370 | **0.00056** | 0.05547 | scaling | 99.1× | 0.999621 |
+| heavy | 0.13443 | **0.00391** | 0.22801 | scaling | 34.4× | 0.999304 |
+| permutation | 0.01806 | **0.00106** | 0.01535 | scaling | 14.5× | 0.999569 |
+
+Three separate readings, and they do not all point the same way:
+
+* **The defect value is basis-dependent** — 0.00056 to 0.00965, a factor of 9.
+  A defect quoted without its basis and normalisation means little.
+* **The class ranking is basis-invariant** — scaling wins in every basis, and the
+  margin over the runner-up never falls below 14×.
+* **The physical answer is basis-invariant** — mapping each recovered direction
+  back through `w_orig = Mᵀv` gives `cos(w, Ke)` between 0.9992 and 0.9996
+  everywhere.
+
+So the conclusion is robust even though the score is not. That distinction should
+be carried into any write-up.
+
 ## 3.10 The discrete part, handled as a mixture
 
 | stratum | n | p_g | k\* | best defect | cos(w, Ke) |
@@ -630,15 +791,45 @@ confronts.
 | Mat3 | 7 | 0.078 | 1 | 0.0006 | 0.999458 |
 | **pooled** | 90 | — | **1** | **0.0011** | **0.999569** |
 
-Max subspace distance between strata: **0.106**. So this is **one symmetry seen
-three times**, not three symmetries averaged into a plausible-looking one — and
-each material recovers the Keyhole number independently, including the one with
-**seven samples**.
+Max subspace distance between strata: **0.106**. The pooled subspace is identical
+to the global one (distance `0.0000`), which is the mixture identity
+`C = Σ_g p_g C_g` holding numerically. Pooled generator:
+`Π₂^(+0.718) · Π₁^(−0.518) · Π₃^(−0.464)` invariant.
 
-The pooled subspace is identical to the global one (distance `0.0000`), which is
-the mixture identity `C = Σ_g p_g C_g` holding numerically.
+### [revised] These are NOT three independent estimates
 
-Pooled generator: `Π₂^(+0.718) · Π₁^(−0.518) · Π₃^(−0.464)` invariant.
+The first version of this document called the table above "one symmetry seen
+three times ... each material recovers the Keyhole number independently." **That
+is wrong, and the retraction matters.** Every row uses gradients from the *same*
+globally fitted GP, so they are conditional checks of one shared surrogate.
+
+Refitting a separate GP on each material shows how much the shared surrogate was
+carrying:
+
+| stratum | n | cos(w, Ke) — global GP | cos(w, Ke) — own GP | R²(LOO), own GP |
+|---|---|---|---|---|
+| Mat1 | 71 | 0.999820 | 0.954818 | 0.9896 |
+| Mat2 | 12 | 0.996978 | **0.666677** | 0.8798 |
+| Mat3 | 7 | 0.999458 | **0.666667** | 0.7113 |
+
+`0.6667` is the degenerate answer — the direction `e₂`, "only Π₂ matters." And
+the reason is structural, not statistical:
+
+```
+Mat1  n=71   centred log-Pi rank = 3 of 3
+Mat2  n=12   centred log-Pi rank = 2 of 3   <- one direction never varied
+Mat3  n= 7   centred log-Pi rank = 2 of 3   <- one direction never varied
+```
+
+Two of the three materials are **rank-deficient in Π space**. They cannot
+identify a three-component exponent vector at all, with any estimator. Seven
+samples spanning a 2-D subspace is not independent evidence for a 3-D direction.
+
+**What survives.** The mixture decomposition is still exact, and it still does
+the job it was introduced for: no direction's estimate rests on the GP
+interpolating *across* a material boundary. The between-stratum distance of 0.106
+still says the three materials are consistent with one shared symmetry rather
+than three different ones. What it cannot support is the word *independent*.
 
 ## 3.11 The transform, discovered rather than selected
 
@@ -715,14 +906,13 @@ returns `k = log Π` with one effective variable, which is the statement that
 
 | claim | evidence |
 |---|---|
-| one dimensionless group governs `e*` | `k* = 1` from the spectrum; stable across 3 densities, 3 materials, bootstrap and GP posterior |
-| it is the Keyhole number | cos = 0.99954 (Π basis), 0.999983 (lift search), 0.9975 (raw variables) |
-| the symmetry class is scaling | defect 0.0011 vs 0.0181 / 0.0154, and R²(1 coord) 0.979 vs 0.261 / 0.136 |
-| 2 generators, genuinely invariant | defects 0.0010 / 0.0015, excitation 1.00, orbit check 8.5% / 13.1% against 153% |
-| the Π theorem is recoverable from data | 4/4 unit directions at defect 0.0000; three at 0.0° |
+| the data support a **one-dimensional approximation** | 99.34 % of gradient energy in one direction; gap 188×; `R²(1 coord) = 0.979`; stable across 3 densities, 4 Π bases, bootstrap and GP posterior |
+| the active direction is the Keyhole number | cos = 0.99954 (Π basis), 0.999983 (lift search), 0.9975 (raw variables), 0.9992–0.9996 across Π bases |
+| the symmetry class is scaling | defect 0.0011 vs 0.0181 / 0.0154; `R²(1 coord)` 0.979 vs 0.261 / 0.136; winner unchanged in all 4 bases at ≥14× margin |
+| 2 approximately invariant directions | defects 0.0010 / 0.0015, excitation 1.00, orbit response 8.5 % / 13.1 % against 153 % |
 | `ρ` moves conditioning, not the answer | `k* = 1` under all three densities, max subspace shift 0.0359 |
-| discreteness does not break it | three independent per-material estimates, between-stratum distance 0.106 |
-| the result is reproducible | no stochastic optimisation anywhere; identical on any machine |
+| the three materials are **consistent with one** symmetry | between-stratum subspace distance 0.106, pooled = global to 0.0000 |
+| the run is reproducible in a fixed environment | no stochastic optimisation after the GP fit; seeded; **not** bit-for-bit across BLAS implementations **[revised]** |
 
 ## 4.2 Not solid — and the run says so from the inside
 
@@ -767,11 +957,36 @@ vs local median `p = −0.63`), and the printed verdict is the right one: the
 invariance is probably not component-wise in those coordinates, and the `gl(n)`
 linear family — which searches the mixing directly — is the tool to reach for.
 
+**[new] Four further limits, added after review:**
+
+* **The one-coordinate `R²` is not nested.** The active direction is estimated
+  once from all 90 observations; only the final 1-D regression is
+  cross-validated. That leaks. An unbiased figure would repeat GP fitting,
+  gradient estimation, family and lift selection, dimension selection and
+  direction estimation inside every fold. Leave-one-material-out would be the
+  informative version — and given the rank-2 strata of §3.10, it should be
+  expected to fail.
+* **The per-material results are conditional on one surrogate**, not independent
+  (§3.10).
+* **Posterior draws are pointwise-independent.** `sample_gradients` draws each
+  evaluation point independently, ignoring posterior correlation between points.
+  For `C = (1/N)Σ gᵢgᵢᵀ`, independent errors average down as `1/N` while
+  spatially coherent errors do not average at all — so the reported model
+  intervals are **anti-conservative**, i.e. too narrow, for coherent surrogate
+  error. (`gradients.py` currently documents this as "conservative"; that is
+  backwards and should be fixed.)
+* **Hyper-parameter uncertainty is not propagated.** ARD length-scales, `σ_f²`
+  and `σ_n²` are fixed at their marginal-likelihood maxima, so the intervals in
+  §3.4 are conditional on those estimates rather than fully Bayesian. A
+  squared-exponential kernel also imposes infinite smoothness; a Matérn
+  comparison would test how much the gradient field depends on that choice.
+
 ## 4.3 What the exercise establishes
 
-1. **The structure is recoverable.** Number of groups, the group itself, the
-   invariance algebra, and the symmetry class, all from one gradient field and
-   one eigen-decomposition per family.
+1. **The structure is recoverable.** The response-relevant dimension, the group
+   itself, the approximate invariant directions and the symmetry class, all from
+   one gradient field and one eigen-decomposition per family — and stable under
+   changes of density and of Π basis.
 2. **`ρ` degrades it in a predictable way.** A discrete design has fewer distinct
    positions to fit a slope through and leans on the surrogate to interpolate
    between levels, so the intervals widen there — which is exactly what the
@@ -781,6 +996,54 @@ linear family — which searches the mixing directly — is the tool to reach fo
    inert coordinate gets a wide interval; the noise floor is printed next to the
    spectrum. A method that gets things wrong *loudly* is worth more than one that
    gets them wrong silently.
+
+## 4.4 [revised] The defensible summary
+
+> The data provide strong evidence for an approximately one-dimensional monomial
+> ridge structure in log-Π coordinates. The estimated active direction is closely
+> aligned with the established Keyhole number, and that alignment is stable under
+> resampling, under the surrogate posterior, under three input densities and
+> under four Π bases. The corresponding scaling directions show approximate
+> invariance *within the fitted surrogate and the sampled region*. Additional
+> theoretical assumptions, nested validation, and a revised treatment of GP
+> gradient uncertainty are required before interpreting the trailing eigenvectors
+> as an exact global symmetry algebra, or before claiming that Buckingham-Π
+> structure has been recovered from raw data alone.
+
+---
+
+# Part V — Open theoretical questions
+
+These are unresolved. They are recorded here rather than hidden because each one
+bounds how strongly a result above may be stated.
+
+| # | question | status |
+|---|---|---|
+| 1 | Is `C_noise` a Bayesian posterior variance or the sampling covariance of a frequentist gradient estimator? The subtraction needs the second; the GP supplies the first. | **open** — §2.7 replaces the subtraction with a ratio, which needs neither |
+| 2 | What theorem licenses subtracting it from the plug-in matrix? | **none known**; calibration measured at a factor ~3 either way |
+| 3 | What regularity, domain and connectedness assumptions turn `null(C)` into a global symmetry algebra? | **stated but unproven** in §2.2; the connectedness condition provably fails in the raw variables |
+| 4 | How should `k*` be selected when all eigenvalues are positive? | currently a 1 % energy threshold, corroborated by gap and `R²`; no formal test |
+| 5 | Is the one-coordinate `R²` nested over the whole pipeline? | **no** — known leakage, §4.2 |
+| 6 | Are the per-material results independent? | **no** — refuted, §3.10 |
+| 7 | How is local excitation assessed on the discrete material sheets? | globally via `excitation`; no per-sheet tangent analysis |
+| 8 | Why is the quadratic lift labelled "rotation"? | the two share **orbits** on positive data but are different families; the naming is misleading and should change — see below |
+| 9 | How sensitive is the defect to metric, basis and normalisation? | **measured**, §2.5 and §3.9a: value swings 9×, ranking and answer do not |
+| 10 | Can the invariances be tested against new observations on predicted orbits? | **not yet attempted** — the strongest available next test |
+
+**On question 8**, to be precise about what is and is not claimed. The
+`RotationFamily` in the code uses `ξ = (eᵢeⱼᵀ − eⱼeᵢᵀ)x`, i.e. genuinely `Ax`
+with `A` skew — not the coordinate-wise field `ẋᵢ = θᵢ/xᵢ` that the quadratic
+lift induces. Those are different families of different dimension
+(`n(n−1)/2` versus `n`). What coincides, on strictly positive data, is their
+**orbits** in a single `(i,j)` plane (`xᵢ² + xⱼ² = const`), which is enough for
+the invariance question but not for identifying the families. The synthetic
+benchmarks already separate the cases — `rotation`, `boost` and `rotation-w`
+share the `x²/2` lift while only the first lies in `so(n)`, with `so(n)` defects
+of 0.0000, 0.0873 and 0.0493 respectively. The mathematics is handled; the label
+is not. Calling it the **quadratic-lift family** would remove the ambiguity —
+and would also explain why the `p = +1` row of §3.11 and the `rotation` row of
+§3.3 report different active dimensions: they are different families that happen
+to share `p = 3` at `n = 3`.
 
 ---
 
@@ -819,5 +1082,19 @@ python discover_symmetry.py --data dataset_keyhole.csv
 python rho_and_transform.py --data dataset_keyhole.csv
 ```
 
-Seed 42, single CPU core, seconds per script. No stochastic optimisation is
-involved anywhere, so the tables above are bit-for-bit reproducible.
+Seed 42, single CPU core, seconds per script.
+
+**[revised] What "reproducible" means here.** The pipeline contains no stochastic
+optimisation after the GP hyper-parameter fit, and that fit is seeded — so a
+rerun in the same environment reproduces these tables exactly. It is *not*
+bit-for-bit across machines: floating-point linear algebra, eigensolver
+implementations, BLAS versions and eigenvector sign conventions all differ.
+Reproducibility should be checked to a tolerance on: eigenvalues, principal
+angles or projector distances, exponent vectors **up to sign and scale**, and
+predictions with their intervals.
+
+**Sign convention.** An eigenvector's sign is arbitrary. Throughout this document
+the recovered direction is normalised so that its Π₂ component is positive
+before comparison with `Ke`; `cos` is reported as `|cos|`, so the comparison is
+against the *line* spanned by `Ke`, not a ray. Reporting `Ke` versus `1/Ke` is
+the same statement under this convention.
